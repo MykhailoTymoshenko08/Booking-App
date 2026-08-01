@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   ChevronLeft,
   ChevronRight,
@@ -34,10 +35,22 @@ const ROW_HEIGHT = 48;
 
 export default function BookingCalendar() {
   const { user: currentUser } = useAuth();
+  const searchParams = useSearchParams();
+
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [weekStart, setWeekStart] = useState<Date>(() => getWeekStart(new Date()));
+
+  const [weekStart, setWeekStart] = useState<Date>(() => {
+    const dateParam = searchParams.get('date');
+    if (dateParam) {
+      const parsed = new Date(dateParam);
+      if (!Number.isNaN(parsed.getTime())) {
+        return getWeekStart(parsed);
+      }
+    }
+    return getWeekStart(new Date());
+  });
 
   const [loadingRooms, setLoadingRooms] = useState(true);
   const [loadingBookings, setLoadingBookings] = useState(true);
@@ -59,8 +72,12 @@ export default function BookingCalendar() {
       try {
         const roomsRes = await fetch('/api/rooms');
         const roomsData = await roomsRes.json();
-        setRooms(roomsData.rooms ?? []);
-        setSelectedRoomId((roomsData.rooms ?? [])[0]?.id ?? null);
+        const fetchedRooms: Room[] = roomsData.rooms ?? [];
+        setRooms(fetchedRooms);
+
+        const roomIdParam = searchParams.get('roomId');
+        const matchedRoom = roomIdParam ? fetchedRooms.find((r) => r.id === roomIdParam) : undefined;
+        setSelectedRoomId(matchedRoom?.id ?? fetchedRooms[0]?.id ?? null);
       } catch {
         setError('Не вдалося завантажити список кімнат');
       } finally {
@@ -185,6 +202,7 @@ export default function BookingCalendar() {
               );
             })}
           </div>
+
           <div className="relative grid grid-cols-[64px_repeat(7,1fr)]">
             <div className="border-r border-slate-200">
               {daySlotsByDay[0]?.map((slot, i) => (
@@ -242,9 +260,13 @@ export default function BookingCalendar() {
                         type="button"
                         onClick={() => isOwn && setCancelTarget(booking)}
                         disabled={!isOwn}
-                        style={{ gridRow: `${startSlotIdx + 1} / ${startSlotIdx + 1 + spanSlots}` }}
+                        style={{
+                          gridRow: `${startSlotIdx + 1} / ${startSlotIdx + 1 + spanSlots}`,
+                          alignSelf: 'start',
+                          height: 'calc(100% - 6px)',
+                        }}
                         title={`${booking.title} · ${booking.user.name}`}
-                        className={`z-10 m-0.5 flex flex-col overflow-hidden rounded-md px-1.5 py-1 text-left text-[11px] leading-tight shadow-sm ${
+                        className={`z-10 mx-0.5 mt-0.5 flex flex-col overflow-hidden rounded-md px-1.5 py-1 text-left text-[11px] leading-tight shadow-sm ${
                           isOwn ? 'cursor-pointer bg-indigo-600 text-white hover:bg-indigo-700' : 'cursor-default bg-slate-500 text-white'
                         }`}
                       >
