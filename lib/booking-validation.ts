@@ -1,5 +1,5 @@
-import { toZonedTime } from 'date-fns-tz';
-import { getHours, getMinutes } from 'date-fns';
+import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import { getHours, getMinutes, addDays } from 'date-fns';
 
 const TIMEZONE = 'Europe/Kyiv';
 const WORK_START_HOUR = 9;
@@ -11,6 +11,27 @@ const MAX_DURATION_MINUTES = 4 * 60;
 
 export class BookingValidationError extends Error {}
 
+/**
+ * Зсуває дату на `weeks` тижнів ВПЕРЕД, зберігаючи той самий час доби
+ * за Kyiv-годинником (а не просто додаючи weeks*7*24 годин в UTC).
+ *
+ * Це важливо для щотижневих повторень: якщо просто додати фіксовану
+ * кількість мілісекунд, перехід на літній/зимній час усередині періоду
+ * повторень зсунув би фактичний kyiv-час зустрічі на годину. Через
+ * toZonedTime/fromZonedTime кожне повторення завжди залишається,
+ * наприклад, рівно "щовівторка о 10:00 за Києвом".
+ */
+export function addWeeksInKyiv(date: Date, weeks: number): Date {
+  if (weeks === 0) return date;
+  const zoned = toZonedTime(date, TIMEZONE);
+  const shifted = addDays(zoned, weeks * 7);
+  return fromZonedTime(shifted, TIMEZONE);
+}
+
+/**
+ * Перевіряє, що бронювання (у UTC) повністю вкладається
+ * в робочі години 09:00–19:00 за Europe/Kyiv.
+ */
 export function isWithinWorkingHours(startTime: Date, endTime: Date): boolean {
   const zonedStart = toZonedTime(startTime, TIMEZONE);
   const zonedEnd = toZonedTime(endTime, TIMEZONE);
@@ -28,7 +49,16 @@ export function isWithinWorkingHours(startTime: Date, endTime: Date): boolean {
   );
 }
 
-// newStartTime < existingEndTime  and  newEndTime > existingStartTime
+/**
+ * Перевіряє, чи перетинається НОВЕ бронювання з ОДНИМ існуючим.
+ *
+ * Перетин існує, якщо:  newStartTime < existingEndTime  ТА  newEndTime > existingStartTime
+ *
+ * Це навмисно НЕ перевіряє "чи припадає на той самий день" — двох бронювань
+ * в одній кімнаті за один день може бути скільки завгодно, аби їхні
+ * інтервали не перетинались. Впритул (existingEndTime === newStartTime)
+ * НЕ вважається перетином — тому нерівності строгі (< / >), а не (<= / >=).
+ */
 export function isOverlapping(
   newStartTime: Date,
   newEndTime: Date,
@@ -44,6 +74,11 @@ interface ExistingBooking {
   endTime: Date;
 }
 
+/**
+ * Перевіряє нове бронювання на перетин з масивом існуючих
+ * бронювань тієї ж кімнати. Повертає перше знайдене
+ * бронювання-конфлікт, або null, якщо все ок.
+ */
 export function findConflictingBooking(
   newStart: Date,
   newEnd: Date,
@@ -58,6 +93,7 @@ export function findConflictingBooking(
   return conflict ?? null;
 }
 
+/** Перевіряє, що час кратний 30 хвилинам (00 або 30 хвилин, 0 секунд/мс) */
 export function isAlignedToSlot(date: Date): boolean {
   return (
     date.getUTCMinutes() % SLOT_MINUTES === 0 &&
@@ -75,6 +111,10 @@ export function isInFuture(startTime: Date): boolean {
   return startTime.getTime() > Date.now();
 }
 
+/**
+ * Повна серверна валідація вхідних даних бронювання (без перевірки перетинів —
+ * та робиться окремо, всередині транзакції, де вже є лок на кімнату).
+ */
 export function validateBookingInput(startTime: Date, endTime: Date): void {
   if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
     throw new BookingValidationError('Некоректний формат дати/часу');
@@ -96,6 +136,10 @@ export function validateBookingInput(startTime: Date, endTime: Date): void {
   }
 }
 
+/**
+ * Головна функція валідації "все в одному" — зручна для юніт-тестів
+ * та сценаріїв, де перевірка перетинів вже має готовий список бронювань.
+ */
 export function validateBooking(
   startTime: Date,
   endTime: Date,
