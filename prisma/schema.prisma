@@ -8,16 +8,31 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  name         String
-  passwordHash String
-  isVerified   Boolean   @default(false)
-  bookings     Booking[]
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  name               String
+  passwordHash       String
+  isVerified         Boolean             @default(false)
+  bookings           Booking[]
+  verificationTokens VerificationToken[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@map("users")
+}
+
+// Одноразовий токен для підтвердження email (dev-режим: посилання лише
+// логується в консоль сервера, реальний SMTP не потрібен).
+model VerificationToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("verification_tokens")
 }
 
 model Room {
@@ -36,6 +51,11 @@ model Booking {
   startTime DateTime
   endTime   DateTime
 
+  // Спільний ідентифікатор для серії повторюваних бронювань (напр. "щовівторка,
+  // 8 повторень"). null для звичайного одноразового бронювання. Дозволяє
+  // скасувати або один конкретний запис, або всю серію одразу.
+  seriesId String?
+
   room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
   roomId String
 
@@ -45,5 +65,6 @@ model Booking {
   createdAt DateTime @default(now())
 
   @@index([roomId, startTime, endTime])
+  @@index([seriesId])
   @@map("bookings")
 }
