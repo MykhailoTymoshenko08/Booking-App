@@ -3,6 +3,7 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
 import { createSessionToken, setSessionCookie } from '@/lib/auth';
+import { createAndSendVerificationToken } from '@/lib/email-verification';
 
 const registerSchema = z.object({
   email: z.string().trim().toLowerCase().email('Некоректний email'),
@@ -31,10 +32,15 @@ export async function POST(request: NextRequest) {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
+    // Акаунт завжди створюється непідтвердженим — isVerified стає true лише
+    // після переходу за посиланням з /api/auth/verify. Доки це не сталося,
+    // POST /api/bookings свідомо відхиляє спроби створити бронювання.
     const user = await prisma.user.create({
       data: { email, name, passwordHash, isVerified: false },
       select: { id: true, email: true, name: true, isVerified: true },
     });
+
+    await createAndSendVerificationToken(user.id, user.email, request.nextUrl.origin);
 
     const token = await createSessionToken({ userId: user.id, email: user.email });
     await setSessionCookie(token);
@@ -45,3 +51,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Внутрішня помилка сервера' }, { status: 500 });
   }
 }
+

@@ -14,9 +14,10 @@ export interface BookingUser {
 export interface Booking {
   id: string;
   title: string;
-  startTime: string;
+  startTime: string; // ISO-рядок, як повертає API
   endTime: string;
   roomId: string;
+  seriesId: string | null;
   room: Room;
   user: BookingUser;
 }
@@ -25,6 +26,7 @@ export interface CurrentUser {
   id: string;
   name: string;
   email: string;
+  isVerified: boolean;
 }
 
 export interface TimeSlot {
