@@ -30,7 +30,6 @@ export async function GET(request: NextRequest) {
 
   const { from, to, roomId, mine } = parsed.data;
 
-  // ?mine=true — бронювання поточного користувача (для сторінки "Мої бронювання"),
   let ownerUserId: string | undefined;
   if (mine === 'true') {
     const session = await getSession();

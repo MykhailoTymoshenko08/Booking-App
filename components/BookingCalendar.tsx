@@ -30,7 +30,7 @@ import BookingModal from './BookingModal';
 import CancelBookingDialog from './CancelBookingDialog';
 import LoginRequiredDialog from './LoginRequiredDialog';
 
-const ROW_HEIGHT = 48; // px — висота одного 30-хвилинного слота
+const ROW_HEIGHT = 48;
 
 export default function BookingCalendar() {
   const { user: currentUser } = useAuth();
@@ -272,7 +272,6 @@ export default function BookingCalendar() {
         </div>
       </div>
 
-      {/* Легенда */}
       <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
         <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-indigo-600" /> Ваші бронювання</span>
         <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-slate-500" /> Бронювання інших</span>
