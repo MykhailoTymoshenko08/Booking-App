@@ -20,7 +20,6 @@ export function getWeekDays(weekStart: Date): Date[] {
   return Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 }
 
-
 export function getDaySlots(day: Date): TimeSlot[] {
   const zonedMidnight = toZonedTime(day, KYIV_TIMEZONE);
   zonedMidnight.setHours(0, 0, 0, 0);
@@ -61,6 +60,10 @@ export function formatWeekRangeLabel(weekStart: Date): string {
 export function isKyivToday(day: Date): boolean {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: KYIV_TIMEZONE }); // YYYY-MM-DD
   return fmt.format(day) === fmt.format(new Date());
+}
+
+export function formatKyivDateParam(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: KYIV_TIMEZONE }).format(date);
 }
 
 export function getBrowserTimezone(): string {

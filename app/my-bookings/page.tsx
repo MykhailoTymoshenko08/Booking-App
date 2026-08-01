@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { CalendarClock, History, Loader2, AlertCircle, MapPin } from 'lucide-react';
+import { CalendarClock, History, Loader2, AlertCircle, MapPin, ChevronRight } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import type { Booking } from '@/lib/types';
-import { formatDayHeader, formatLocalTime } from '@/lib/schedule-utils';
+import { formatDayHeader, formatLocalTime, formatKyivDateParam } from '@/lib/schedule-utils';
 import CancelBookingDialog from '@/components/CancelBookingDialog';
 
 export default function MyBookingsPage() {
@@ -50,6 +50,11 @@ export default function MyBookingsPage() {
     setCancelTarget(null);
   }
 
+  function handleRowClick(booking: Booking) {
+    const dateParam = formatKyivDateParam(new Date(booking.startTime));
+    router.push(`/?roomId=${booking.roomId}&date=${dateParam}`);
+  }
+
   if (authLoading || !user) {
     return (
       <div className="flex justify-center py-16">
@@ -74,7 +79,17 @@ export default function MyBookingsPage() {
     return (
       <div
         key={booking.id}
-        className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3"
+        role="button"
+        tabIndex={0}
+        onClick={() => handleRowClick(booking)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleRowClick(booking);
+          }
+        }}
+        title="Перейти до цього бронювання в розкладі"
+        className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-indigo-300 hover:bg-indigo-50/60 focus:outline-none focus:ring-2 focus:ring-indigo-500"
       >
         <div className="min-w-0">
           <div className="truncate font-medium text-slate-900">{booking.title}</div>
@@ -86,15 +101,22 @@ export default function MyBookingsPage() {
             {dayLabel.weekday}, {dayLabel.dayMonth} · {formatLocalTime(start)}–{formatLocalTime(end)}
           </div>
         </div>
-        {cancellable && (
-          <button
-            type="button"
-            onClick={() => setCancelTarget(booking)}
-            className="flex-shrink-0 rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
-          >
-            Скасувати
-          </button>
-        )}
+
+        <div className="flex flex-shrink-0 items-center gap-2">
+          {cancellable && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCancelTarget(booking);
+              }}
+              className="rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
+            >
+              Скасувати
+            </button>
+          )}
+          <ChevronRight className="h-4 w-4 text-slate-300" aria-hidden="true" />
+        </div>
       </div>
     );
   }
