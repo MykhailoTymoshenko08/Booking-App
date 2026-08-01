@@ -28,6 +28,7 @@ services:
       DATABASE_URL: postgresql://booking:booking@db:5432/booking?schema=public
       JWT_SECRET: replace-with-a-long-random-string-min-32-chars
       NODE_ENV: production
+      NOTIFY_BEFORE_MINUTES: ${NOTIFY_BEFORE_MINUTES:-10}
     ports:
       - '3000:3000'
 
