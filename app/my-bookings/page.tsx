@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { CalendarClock, History, Loader2, AlertCircle, MapPin, ChevronRight } from 'lucide-react';
+import { CalendarClock, History, Loader2, AlertCircle, MapPin, ChevronRight, Repeat } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import type { Booking } from '@/lib/types';
 import { formatDayHeader, formatLocalTime, formatKyivDateParam } from '@/lib/schedule-utils';
@@ -35,6 +35,8 @@ export default function MyBookingsPage() {
     }
   }, []);
 
+  // Неавторизованого користувача перенаправляємо на логін,
+  // щойно стан авторизації підвантажився.
   useEffect(() => {
     if (!authLoading && !user) {
       router.push('/login');
@@ -50,6 +52,16 @@ export default function MyBookingsPage() {
     setCancelTarget(null);
   }
 
+  function handleSeriesCancelled(seriesId: string) {
+    const now = Date.now();
+    setBookings((prev) =>
+      prev.filter((b) => !(b.seriesId === seriesId && new Date(b.startTime).getTime() > now))
+    );
+    setCancelTarget(null);
+  }
+
+  // Клік по рядку бронювання: повертаємось на розклад з уже обраною
+  // кімнатою й тижнем, у якому відбувається саме ЦЕ бронювання.
   function handleRowClick(booking: Booking) {
     const dateParam = formatKyivDateParam(new Date(booking.startTime));
     router.push(`/?roomId=${booking.roomId}&date=${dateParam}`);
@@ -97,8 +109,16 @@ export default function MyBookingsPage() {
             <MapPin className="h-3.5 w-3.5 flex-shrink-0" />
             {booking.room.name}
           </div>
-          <div className="text-sm text-slate-500">
-            {dayLabel.weekday}, {dayLabel.dayMonth} · {formatLocalTime(start)}–{formatLocalTime(end)}
+          <div className="flex items-center gap-1.5 text-sm text-slate-500">
+            <span>
+              {dayLabel.weekday}, {dayLabel.dayMonth} · {formatLocalTime(start)}–{formatLocalTime(end)}
+            </span>
+            {booking.seriesId && (
+              <span className="flex items-center gap-0.5 rounded-full bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-600">
+                <Repeat className="h-3 w-3" />
+                Серія
+              </span>
+            )}
           </div>
         </div>
 
@@ -107,6 +127,7 @@ export default function MyBookingsPage() {
             <button
               type="button"
               onClick={(e) => {
+                // Клік по кнопці не повинен також запускати перехід на розклад.
                 e.stopPropagation();
                 setCancelTarget(booking);
               }}
@@ -169,6 +190,7 @@ export default function MyBookingsPage() {
         booking={cancelTarget}
         onClose={() => setCancelTarget(null)}
         onCancelled={handleCancelled}
+        onSeriesCancelled={handleSeriesCancelled}
       />
     </div>
   );

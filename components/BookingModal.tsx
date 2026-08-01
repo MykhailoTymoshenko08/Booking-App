@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { X, Loader2, AlertCircle, CalendarPlus } from 'lucide-react';
+import { X, Loader2, AlertCircle, CalendarPlus, Repeat } from 'lucide-react';
 import type { Booking, Room } from '@/lib/types';
 import { formatLocalTime, formatDayHeader } from '@/lib/schedule-utils';
 
@@ -9,14 +9,19 @@ interface BookingModalProps {
   isOpen: boolean;
   room: Room;
   slotStart: Date;
-  dayCloseTime: Date;
+  dayCloseTime: Date; // 19:00 за Києвом цього дня, як абсолютний Date
   onClose: () => void;
-  onCreated: (booking: Booking) => void;
-} 
+  // Повертає ВСІ створені бронювання — для одноразового це масив з 1 елемента,
+  // для серії повторень — усі occurrences одразу.
+  onCreated: (bookings: Booking[]) => void;
+}
 
 const MIN_DURATION = 30;
 const MAX_DURATION = 240;
 const DURATION_STEP = 30;
+const MIN_OCCURRENCES = 2;
+const MAX_OCCURRENCES = 52;
+const DEFAULT_OCCURRENCES = 8;
 
 function formatDurationLabel(minutes: number): string {
   const hours = Math.floor(minutes / 60);
@@ -36,6 +41,8 @@ export default function BookingModal({
 }: BookingModalProps) {
   const [title, setTitle] = useState('');
   const [duration, setDuration] = useState(60);
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [occurrences, setOccurrences] = useState(DEFAULT_OCCURRENCES);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [titleError, setTitleError] = useState<string | null>(null);
@@ -49,14 +56,18 @@ export default function BookingModal({
   }, [slotStart, dayCloseTime]);
 
   const endTime = useMemo(() => new Date(slotStart.getTime() + duration * 60000), [slotStart, duration]);
+  const lastOccurrenceLabel = useMemoLastOccurrenceLabel(isRecurring, occurrences, slotStart);
 
   useEffect(() => {
     if (isOpen) {
       setTitle('');
       setError(null);
       setTitleError(null);
+      setIsRecurring(false);
+      setOccurrences(DEFAULT_OCCURRENCES);
       setDuration(availableDurations.includes(60) ? 60 : availableDurations[0] ?? MIN_DURATION);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, slotStart]);
 
   useEffect(() => {
@@ -99,6 +110,7 @@ export default function BookingModal({
           roomId: room.id,
           startTime: slotStart.toISOString(),
           endTime: endTime.toISOString(),
+          ...(isRecurring ? { recurrence: { occurrences } } : {}),
         }),
       });
       const data = await response.json();
@@ -107,7 +119,7 @@ export default function BookingModal({
         setError(data.error ?? 'Не вдалося створити бронювання');
         return;
       }
-      onCreated(data.booking as Booking);
+      onCreated((data.bookings as Booking[]) ?? [data.booking as Booking]);
     } catch {
       setError("Помилка з'єднання із сервером. Спробуйте ще раз");
     } finally {
@@ -194,6 +206,43 @@ export default function BookingModal({
             <p className="mt-1 text-xs text-slate-500">Кабінет вільний до {formatLocalTime(dayCloseTime)}</p>
           </div>
 
+          <div className="rounded-lg border border-slate-200 px-3 py-2.5">
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={isRecurring}
+                onChange={(e) => setIsRecurring(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <Repeat className="h-4 w-4 text-indigo-600" />
+              Повторювати щотижня ({dayLabel.weekday})
+            </label>
+
+            {isRecurring && (
+              <div className="mt-2.5 pl-6">
+                <label htmlFor="booking-occurrences" className="mb-1 block text-xs font-medium text-slate-600">
+                  Кількість повторень (включно з цим)
+                </label>
+                <input
+                  id="booking-occurrences"
+                  type="number"
+                  min={MIN_OCCURRENCES}
+                  max={MAX_OCCURRENCES}
+                  value={occurrences}
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    setOccurrences(Math.min(MAX_OCCURRENCES, Math.max(MIN_OCCURRENCES, value || MIN_OCCURRENCES)));
+                  }}
+                  className="w-24 rounded-md border border-slate-300 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <p className="mt-1 text-xs text-slate-500">{lastOccurrenceLabel}</p>
+                <p className="mt-1 text-xs text-amber-600">
+                  Якщо хоча б одне з повторень конфліктує з наявним бронюванням — уся серія не створюється.
+                </p>
+              </div>
+            )}
+          </div>
+
           {error && (
             <div className="flex items-start gap-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
               <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
@@ -216,11 +265,21 @@ export default function BookingModal({
               className="flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
             >
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Забронювати
+              {isRecurring ? `Забронювати (${occurrences})` : 'Забронювати'}
             </button>
           </div>
         </form>
       </div>
     </div>
   );
+}
+
+/** Невеликий хук-хелпер: підпис "останнє повторення — <дата>" для наочності форми. */
+function useMemoLastOccurrenceLabel(isRecurring: boolean, occurrences: number, slotStart: Date): string {
+  return useMemo(() => {
+    if (!isRecurring) return '';
+    const lastDate = new Date(slotStart.getTime() + (occurrences - 1) * 7 * 24 * 60 * 60 * 1000);
+    const label = formatDayHeader(lastDate);
+    return `Останнє повторення: ${label.weekday}, ${label.dayMonth}`;
+  }, [isRecurring, occurrences, slotStart]);
 }

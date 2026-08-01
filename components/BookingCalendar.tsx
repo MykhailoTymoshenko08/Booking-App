@@ -11,6 +11,9 @@ import {
   Lock,
   CalendarCheck,
   User as UserIcon,
+  Repeat,
+  CheckCircle2,
+  X,
 } from 'lucide-react';
 import type { Booking, Room, TimeSlot } from '@/lib/types';
 import { useAuth } from '@/lib/auth-context';
@@ -30,8 +33,9 @@ import {
 import BookingModal from './BookingModal';
 import CancelBookingDialog from './CancelBookingDialog';
 import LoginRequiredDialog from './LoginRequiredDialog';
+import EmailVerificationRequiredDialog from './EmailVerificationRequiredDialog';
 
-const ROW_HEIGHT = 48;
+const ROW_HEIGHT = 48; // px — висота одного 30-хвилинного слота
 
 export default function BookingCalendar() {
   const { user: currentUser } = useAuth();
@@ -41,6 +45,10 @@ export default function BookingCalendar() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
 
+  // Якщо в URL є ?date=YYYY-MM-DD (перехід зі сторінки "Мої бронювання") —
+  // одразу відкриваємо тиждень, у якому це бронювання відбувається.
+  // Лінивий ініціалізатор useState виконується лише РАЗ, при монтуванні,
+  // тож подальша навігація по тижнях цим значенням більше не керується.
   const [weekStart, setWeekStart] = useState<Date>(() => {
     const dateParam = searchParams.get('date');
     if (dateParam) {
@@ -59,6 +67,12 @@ export default function BookingCalendar() {
   const [pendingSlot, setPendingSlot] = useState<{ slot: TimeSlot; dayCloseTime: Date } | null>(null);
   const [cancelTarget, setCancelTarget] = useState<Booking | null>(null);
   const [loginRequiredOpen, setLoginRequiredOpen] = useState(false);
+  const [verificationRequiredOpen, setVerificationRequiredOpen] = useState(false);
+
+  // Якщо повернулись за посиланням з /api/auth/verify?...redirect=/?verified=1 —
+  // показуємо один раз дружній банер. Лінивий ініціалізатор читає URL лише
+  // при монтуванні, самé значення прапорця далі керується лише dismiss-ом.
+  const [showVerifiedBanner, setShowVerifiedBanner] = useState(() => searchParams.get('verified') === '1');
 
   const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart]);
   const daySlotsByDay = useMemo(() => weekDays.map((day) => getDaySlots(day)), [weekDays]);
@@ -67,6 +81,7 @@ export default function BookingCalendar() {
   const kyivOffset = useMemo(() => getTimezoneOffsetLabel(KYIV_TIMEZONE), []);
   const browserOffset = useMemo(() => getTimezoneOffsetLabel(browserTimezone), [browserTimezone]);
 
+  // ---- Кімнати — один раз при монтуванні (поточний користувач іде з AuthProvider) ----
   useEffect(() => {
     async function loadRooms() {
       try {
@@ -75,6 +90,8 @@ export default function BookingCalendar() {
         const fetchedRooms: Room[] = roomsData.rooms ?? [];
         setRooms(fetchedRooms);
 
+        // Якщо в URL є ?roomId=... і така кімната справді існує — обираємо
+        // саме її (deep-link з "Моїх бронювань"), інакше перша зі списку.
         const roomIdParam = searchParams.get('roomId');
         const matchedRoom = roomIdParam ? fetchedRooms.find((r) => r.id === roomIdParam) : undefined;
         setSelectedRoomId(matchedRoom?.id ?? fetchedRooms[0]?.id ?? null);
@@ -85,8 +102,12 @@ export default function BookingCalendar() {
       }
     }
     loadRooms();
+    // Навмисно порожній масив залежностей: параметри з URL нас цікавлять
+    // лише в момент першого завантаження сторінки, а не при кожній зміні.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---- Бронювання для вибраної кімнати й тижня ----
   const loadBookings = useCallback(async () => {
     if (!selectedRoomId) return;
     setLoadingBookings(true);
@@ -123,11 +144,15 @@ export default function BookingCalendar() {
       setLoginRequiredOpen(true);
       return;
     }
+    if (!currentUser.isVerified) {
+      setVerificationRequiredOpen(true);
+      return;
+    }
     setPendingSlot({ slot, dayCloseTime });
   }
 
-  function handleBookingCreated(booking: Booking) {
-    setBookings((prev) => [...prev, booking]);
+  function handleBookingCreated(newBookings: Booking[]) {
+    setBookings((prev) => [...prev, ...newBookings]);
     setPendingSlot(null);
   }
 
@@ -136,8 +161,19 @@ export default function BookingCalendar() {
     setCancelTarget(null);
   }
 
+  function handleSeriesCancelled(seriesId: string) {
+    // Сервер скасовує лише МАЙБУТНІ повторення серії — тож із локального
+    // стану теж прибираємо тільки ті, що ще не почались.
+    const now = Date.now();
+    setBookings((prev) =>
+      prev.filter((b) => !(b.seriesId === seriesId && new Date(b.startTime).getTime() > now))
+    );
+    setCancelTarget(null);
+  }
+
   return (
     <div className="mx-auto max-w-6xl">
+      {/* Заголовок і вибір кімнати */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-slate-900">Розклад переговорних</h1>
         {!loadingRooms && rooms.length > 0 && (
@@ -157,6 +193,7 @@ export default function BookingCalendar() {
         )}
       </div>
 
+      {/* Навігація по тижнях + підпис часових поясів */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <button onClick={goToPreviousWeek} aria-label="Попередній тиждень" className="rounded-md border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-100">
@@ -187,8 +224,34 @@ export default function BookingCalendar() {
         </div>
       )}
 
+      {showVerifiedBanner && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          <span className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4" />
+            Email підтверджено — тепер ви можете створювати бронювання.
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowVerifiedBanner(false)}
+            className="rounded p-0.5 text-emerald-600 hover:bg-emerald-100"
+            aria-label="Закрити"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {currentUser && !currentUser.isVerified && (
+        <div className="mb-3 flex items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
+          <AlertCircle className="h-4 w-4" />
+          Email ще не підтверджено — бронювання будуть недоступні, доки ви не перейдете за посиланням із консолі сервера.
+        </div>
+      )}
+
+      {/* Сітка розкладу */}
       <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="min-w-[820px]">
+          {/* Заголовки днів */}
           <div className="grid grid-cols-[64px_repeat(7,1fr)] border-b border-slate-200">
             <div className="border-r border-slate-200" />
             {weekDays.map((day, i) => {
@@ -203,7 +266,9 @@ export default function BookingCalendar() {
             })}
           </div>
 
+          {/* Тіло: вісь часу + 7 колонок днів */}
           <div className="relative grid grid-cols-[64px_repeat(7,1fr)]">
+            {/* Вісь часу — локальний час браузера, підпис кожної години */}
             <div className="border-r border-slate-200">
               {daySlotsByDay[0]?.map((slot, i) => (
                 <div
@@ -216,6 +281,7 @@ export default function BookingCalendar() {
               ))}
             </div>
 
+            {/* Колонки днів — кожна є власним CSS Grid із 20 рядками */}
             {weekDays.map((day, dayIndex) => {
               const slots = daySlotsByDay[dayIndex];
               const dayCloseTime = slots[slots.length - 1].end;
@@ -230,6 +296,7 @@ export default function BookingCalendar() {
                   className="grid border-r border-slate-200 last:border-r-0"
                   style={{ gridTemplateRows: `repeat(${TOTAL_SLOTS}, ${ROW_HEIGHT}px)` }}
                 >
+                  {/* Фонові слоти — клікабельні, якщо вільні й у майбутньому */}
                   {slots.map((slot, slotIndex) => {
                     const isPast = slot.start.getTime() <= Date.now();
                     return (
@@ -247,6 +314,7 @@ export default function BookingCalendar() {
                     );
                   })}
 
+                  {/* Блоки бронювань — розміщені у тих самих grid-рядках, span = тривалість / 30 хв */}
                   {dayBookings.map((booking) => {
                     const bStart = new Date(booking.startTime);
                     const bEnd = new Date(booking.endTime);
@@ -262,6 +330,13 @@ export default function BookingCalendar() {
                         disabled={!isOwn}
                         style={{
                           gridRow: `${startSlotIdx + 1} / ${startSlotIdx + 1 + spanSlots}`,
+                          // Явний height: calc() + alignSelf: 'start' замість покладання
+                          // на стандартний grid-stretch (align-items: stretch) + margin:
+                          // блок гарантовано "прибитий" до ВЕРХНЬОЇ межі своїх рядків і
+                          // залишає точно 6px вільного простору ВНИЗУ, перед наступним
+                          // слотом — тому сусідній вільний слот одразу після цього
+                          // бронювання завжди лишається на 100% клікабельним, а не лише
+                          // тонкою смужкою по краю.
                           alignSelf: 'start',
                           height: 'calc(100% - 6px)',
                         }}
@@ -273,6 +348,7 @@ export default function BookingCalendar() {
                         <span className="flex items-center gap-1 font-medium">
                           {isOwn ? <CalendarCheck className="h-3 w-3 flex-shrink-0" /> : <Lock className="h-3 w-3 flex-shrink-0" />}
                           <span className="truncate">{booking.title}</span>
+                          {booking.seriesId && <Repeat className="h-3 w-3 flex-shrink-0 opacity-80" aria-label="Повторюване бронювання" />}
                         </span>
                         <span className="flex items-center gap-1 truncate opacity-90">
                           <UserIcon className="h-3 w-3 flex-shrink-0" />
@@ -294,12 +370,14 @@ export default function BookingCalendar() {
         </div>
       </div>
 
+      {/* Легенда */}
       <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
         <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-indigo-600" /> Ваші бронювання</span>
         <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-slate-500" /> Бронювання інших</span>
         <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-sm bg-slate-50 ring-1 ring-slate-200" /> Минулий час</span>
       </div>
 
+      {/* Модальні вікна */}
       {pendingSlot && selectedRoom && (
         <BookingModal
           isOpen
@@ -316,9 +394,18 @@ export default function BookingCalendar() {
         booking={cancelTarget}
         onClose={() => setCancelTarget(null)}
         onCancelled={handleBookingCancelled}
+        onSeriesCancelled={handleSeriesCancelled}
       />
 
       <LoginRequiredDialog isOpen={loginRequiredOpen} onClose={() => setLoginRequiredOpen(false)} />
+
+      {currentUser && (
+        <EmailVerificationRequiredDialog
+          isOpen={verificationRequiredOpen}
+          email={currentUser.email}
+          onClose={() => setVerificationRequiredOpen(false)}
+        />
+      )}
     </div>
   );
 }
