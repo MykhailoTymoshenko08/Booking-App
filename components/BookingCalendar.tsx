@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   ChevronLeft,
@@ -11,6 +11,8 @@ import {
   Lock,
   CalendarCheck,
   User as UserIcon,
+  Users,
+  Bell,
   Repeat,
   CheckCircle2,
   X,
@@ -44,6 +46,19 @@ export default function BookingCalendar() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
+
+  // Фільтр за мінімальною місткістю кімнати. 0 = "Будь-яка" (без фільтра).
+  const [minCapacity, setMinCapacity] = useState(0);
+
+  // За скільки хвилин до кінця бронювання показувати тост-сповіщення,
+  // якщо наступний слот у кімнаті вже зайнятий. Значення підтягується
+  // з /api/config (сервер читає process.env.NOTIFY_BEFORE_MINUTES),
+  // 10 — розумний дефолт, поки конфіг ще не завантажився.
+  const [notifyBeforeMinutes, setNotifyBeforeMinutes] = useState(10);
+  const [toasts, setToasts] = useState<{ id: string; message: string }[]>([]);
+  // Booking id, для яких сповіщення вже показано — щоб не дублювати тост
+  // на кожному тіку інтервалу. Ref, а не state: не повинен викликати ререндер.
+  const notifiedBookingIdsRef = useRef<Set<string>>(new Set());
 
   // Якщо в URL є ?date=YYYY-MM-DD (перехід зі сторінки "Мої бронювання") —
   // одразу відкриваємо тиждень, у якому це бронювання відбувається.
@@ -80,6 +95,20 @@ export default function BookingCalendar() {
   const browserTimezone = useMemo(() => getBrowserTimezone(), []);
   const kyivOffset = useMemo(() => getTimezoneOffsetLabel(KYIV_TIMEZONE), []);
   const browserOffset = useMemo(() => getTimezoneOffsetLabel(browserTimezone), [browserTimezone]);
+
+  // ---- Runtime-конфіг (NOTIFY_BEFORE_MINUTES) — один раз при монтуванні ----
+  useEffect(() => {
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (typeof data.notifyBeforeMinutes === 'number') {
+          setNotifyBeforeMinutes(data.notifyBeforeMinutes);
+        }
+      })
+      .catch(() => {
+        // Мовчазний fallback на дефолтні 10 хв — не критично для роботи сітки.
+      });
+  }, []);
 
   // ---- Кімнати — один раз при монтуванні (поточний користувач іде з AuthProvider) ----
   useEffect(() => {
@@ -135,6 +164,27 @@ export default function BookingCalendar() {
 
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId) ?? null;
 
+  // Пороги для пілюль фільтра — динамічно з реальних місткостей кімнат
+  // (а не захардкоджені числа), тож фільтр завжди відповідає даним з БД.
+  const capacityOptions = useMemo(
+    () => Array.from(new Set(rooms.map((r) => r.capacity))).sort((a, b) => a - b),
+    [rooms]
+  );
+  const filteredRooms = useMemo(
+    () => rooms.filter((r) => r.capacity >= minCapacity),
+    [rooms, minCapacity]
+  );
+
+  // Якщо після зміни фільтра поточна вибрана кімната випала зі списку —
+  // автоматично переключаємось на першу відповідну, а не лишаємо порожній стан.
+  useEffect(() => {
+    if (filteredRooms.length === 0) return;
+    if (!filteredRooms.some((r) => r.id === selectedRoomId)) {
+      setSelectedRoomId(filteredRooms[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minCapacity, filteredRooms]);
+
   const goToPreviousWeek = () => setWeekStart((prev) => new Date(prev.getTime() - 7 * 24 * 60 * 60 * 1000));
   const goToNextWeek = () => setWeekStart((prev) => new Date(prev.getTime() + 7 * 24 * 60 * 60 * 1000));
   const goToToday = () => setWeekStart(getWeekStart(new Date()));
@@ -171,14 +221,76 @@ export default function BookingCalendar() {
     setCancelTarget(null);
   }
 
+  function pushToast(message: string) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setToasts((prev) => [...prev, { id, message }]);
+    // Автоматичне зникнення через 10 секунд.
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 10000);
+  }
+
+  function dismissToast(id: string) {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  // ---- Сповіщення "кінець бронювання, наступний слот зайнятий" ----
+  // Перевіряємо кожні 15 секунд стан УЖЕ ЗАВАНТАЖЕНИХ бронювань поточної
+  // кімнати/тижня (без додаткових запитів до сервера). Оскільки перевірка
+  // відбувається щоразу заново на основі АКТУАЛЬНОГО масиву `bookings`,
+  // а не одноразового таймера при монтуванні — якщо власне бронювання АБО
+  // наступне (яке його "підпирає") скасовується, умова просто перестає
+  // виконуватись і сповіщення само по собі не приходить.
+  useEffect(() => {
+    if (!currentUser) return;
+
+    function checkForEndingBookings() {
+      const now = Date.now();
+
+      for (const booking of bookings) {
+        if (booking.user.id !== currentUser!.id) continue;
+        if (notifiedBookingIdsRef.current.has(booking.id)) continue;
+
+        const endMs = new Date(booking.endTime).getTime();
+        const msUntilEnd = endMs - now;
+        const notifyWindowMs = notifyBeforeMinutes * 60 * 1000;
+
+        // Ще рано (більше ніж N хвилин лишилось) або вже закінчилось.
+        if (msUntilEnd <= 0 || msUntilEnd > notifyWindowMs) continue;
+
+        // Чи зайнятий наступний слот у ЦІЙ кімнаті одразу після цього
+        // бронювання (інше бронювання починається рівно тоді, коли це
+        // закінчується — впритул, без розриву)?
+        const nextSlotOccupied = bookings.some(
+          (other) => other.id !== booking.id && other.roomId === booking.roomId && new Date(other.startTime).getTime() === endMs
+        );
+        if (!nextSlotOccupied) continue;
+
+        notifiedBookingIdsRef.current.add(booking.id);
+        const minutesLeft = Math.max(1, Math.round(msUntilEnd / 60000));
+        pushToast(
+          `"${booking.title}" у кімнаті ${booking.room.name} закінчується через ${minutesLeft} хв — наступна зустріч уже чекає.`
+        );
+      }
+    }
+
+    checkForEndingBookings();
+    const interval = setInterval(checkForEndingBookings, 15000);
+    return () => clearInterval(interval);
+  }, [bookings, currentUser, notifyBeforeMinutes]);
+
   return (
     <div className="mx-auto max-w-6xl">
-      {/* Заголовок і вибір кімнати */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-slate-900">Розклад переговорних</h1>
-        {!loadingRooms && rooms.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {rooms.map((room) => (
+      {/* Заголовок */}
+      <h1 className="mb-3 text-xl font-semibold text-slate-900">Розклад переговорних</h1>
+
+      {/* Кімнати */}
+      {!loadingRooms && rooms.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {filteredRooms.length === 0 ? (
+            <span className="text-sm text-slate-500">Немає кімнат із такою місткістю.</span>
+          ) : (
+            filteredRooms.map((room) => (
               <button
                 key={room.id}
                 onClick={() => setSelectedRoomId(room.id)}
@@ -186,15 +298,44 @@ export default function BookingCalendar() {
                   room.id === selectedRoomId ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
-                {room.name}
+                {room.name} · {room.capacity}
               </button>
-            ))}
-          </div>
-        )}
-      </div>
+            ))
+          )}
+        </div>
+      )}
 
-      {/* Навігація по тижнях + підпис часових поясів */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+      {/* Фільтр за місткістю */}
+      {!loadingRooms && capacityOptions.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5">
+          <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
+            <Users className="h-3.5 w-3.5" />
+            Місткість:
+          </span>
+          <button
+            onClick={() => setMinCapacity(0)}
+            className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+              minCapacity === 0 ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            Будь-яка
+          </button>
+          {capacityOptions.map((capacity) => (
+            <button
+              key={capacity}
+              onClick={() => setMinCapacity(capacity)}
+              className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+                minCapacity === capacity ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {capacity}+
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Навігація по тижнях + підпис часових поясів (стек на мобільному) */}
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <button onClick={goToPreviousWeek} aria-label="Попередній тиждень" className="rounded-md border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-100">
             <ChevronLeft className="h-4 w-4" />
@@ -248,38 +389,45 @@ export default function BookingCalendar() {
         </div>
       )}
 
-      {/* Сітка розкладу */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="min-w-[820px]">
-          {/* Заголовки днів */}
-          <div className="grid grid-cols-[64px_repeat(7,1fr)] border-b border-slate-200">
-            <div className="border-r border-slate-200" />
-            {weekDays.map((day, i) => {
-              const { weekday, dayMonth } = formatDayHeader(day);
-              const today = isKyivToday(day);
-              return (
-                <div key={i} className={`border-r border-slate-200 px-2 py-2 text-center last:border-r-0 ${today ? 'bg-indigo-50' : ''}`}>
-                  <div className={`text-xs uppercase ${today ? 'text-indigo-600' : 'text-slate-400'}`}>{weekday}</div>
-                  <div className={`text-sm font-semibold ${today ? 'text-indigo-700' : 'text-slate-700'}`}>{dayMonth}</div>
-                </div>
-              );
-            })}
-          </div>
+      {/* Підказка про горизонтальний скрол — лише на вузьких екранах */}
+      <p className="mb-1.5 flex items-center gap-1 text-xs text-slate-400 sm:hidden">
+        <ChevronRight className="h-3 w-3" />
+        Гортайте сітку по горизонталі, щоб побачити всі дні тижня
+      </p>
 
-          {/* Тіло: вісь часу + 7 колонок днів */}
-          <div className="relative grid grid-cols-[64px_repeat(7,1fr)]">
-            {/* Вісь часу — локальний час браузера, підпис кожної години */}
-            <div className="border-r border-slate-200">
-              {daySlotsByDay[0]?.map((slot, i) => (
-                <div
-                  key={i}
-                  style={{ height: ROW_HEIGHT }}
-                  className="flex items-start justify-end border-t border-slate-100 px-2 pt-0.5 text-[11px] text-slate-400 first:border-t-0"
-                >
-                  {i % 2 === 0 ? formatLocalTime(slot.start) : ''}
-                </div>
-              ))}
+      {/* Сітка розкладу */}
+      <div className="relative">
+        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="min-w-[640px] sm:min-w-[820px]">
+            {/* Заголовки днів */}
+            <div className="grid grid-cols-[48px_repeat(7,1fr)] border-b border-slate-200 sm:grid-cols-[64px_repeat(7,1fr)]">
+              <div className="border-r border-slate-200" />
+              {weekDays.map((day, i) => {
+                const { weekday, dayMonth } = formatDayHeader(day);
+                const today = isKyivToday(day);
+                return (
+                  <div key={i} className={`border-r border-slate-200 px-1 py-2 text-center last:border-r-0 sm:px-2 ${today ? 'bg-indigo-50' : ''}`}>
+                    <div className={`text-[10px] uppercase sm:text-xs ${today ? 'text-indigo-600' : 'text-slate-400'}`}>{weekday}</div>
+                    <div className={`text-xs font-semibold sm:text-sm ${today ? 'text-indigo-700' : 'text-slate-700'}`}>{dayMonth}</div>
+                  </div>
+                );
+              })}
             </div>
+
+            {/* Тіло: вісь часу + 7 колонок днів */}
+            <div className="relative grid grid-cols-[48px_repeat(7,1fr)] sm:grid-cols-[64px_repeat(7,1fr)]">
+              {/* Вісь часу — локальний час браузера, підпис кожної години */}
+              <div className="border-r border-slate-200">
+                {daySlotsByDay[0]?.map((slot, i) => (
+                  <div
+                    key={i}
+                    style={{ height: ROW_HEIGHT }}
+                    className="flex items-start justify-end border-t border-slate-100 px-1 pt-0.5 text-[10px] text-slate-400 first:border-t-0 sm:px-2 sm:text-[11px]"
+                  >
+                    {i % 2 === 0 ? formatLocalTime(slot.start) : ''}
+                  </div>
+                ))}
+              </div>
 
             {/* Колонки днів — кожна є власним CSS Grid із 20 рядками */}
             {weekDays.map((day, dayIndex) => {
@@ -368,6 +516,10 @@ export default function BookingCalendar() {
             )}
           </div>
         </div>
+        </div>
+
+        {/* Градієнт-хінт справа: підказує, що сітку можна прогорнути далі (лише мобільні) */}
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-white to-transparent sm:hidden" />
       </div>
 
       {/* Легенда */}
@@ -405,6 +557,30 @@ export default function BookingCalendar() {
           email={currentUser.email}
           onClose={() => setVerificationRequiredOpen(false)}
         />
+      )}
+
+      {/* Тости "кінець бронювання" — фіксовані внизу справа, стеком */}
+      {toasts.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-50 flex w-[calc(100%-2rem)] max-w-sm flex-col gap-2">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              role="status"
+              className="flex items-start gap-2 rounded-lg border border-amber-200 bg-white px-3 py-2.5 text-sm text-slate-700 shadow-lg"
+            >
+              <Bell className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
+              <span className="flex-1">{toast.message}</span>
+              <button
+                type="button"
+                onClick={() => dismissToast(toast.id)}
+                className="flex-shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Закрити сповіщення"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
