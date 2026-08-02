@@ -9,6 +9,8 @@
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "start-server-and-test \"next dev -p 3100\" http://localhost:3100/api/config test:integration:run",
+    "test:integration:run": "vitest run --config vitest.integration.config.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {
@@ -31,9 +33,13 @@
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "@types/supertest": "^6.0.2",
     "autoprefixer": "^10.4.19",
+    "dotenv": "^16.4.5",
     "postcss": "^8.4.38",
     "prisma": "^5.20.0",
+    "start-server-and-test": "^2.0.8",
+    "supertest": "^7.0.0",
     "tailwindcss": "^3.4.4",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3",
