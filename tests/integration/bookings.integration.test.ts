@@ -161,7 +161,10 @@ describe('Bookings API (integration)', () => {
     });
 
     it('відхиляє бронювання, що перетинається з існуючим (409)', async () => {
-      const { start, end } = futureWorkingHoursSlot(3, 11);
+      // Тривалість 60 хв (не 30) навмисно — щоб зсув для перекриття теж
+      // міг бути кратним 30 хв, інакше тест сам порушив би перевірку
+      // вирівнювання слоту раніше, ніж дійде до перевірки перетину.
+      const { start, end } = futureWorkingHoursSlot(3, 11, 60);
 
       const first = await agent.post('/api/bookings').send({
         title: 'Базове бронювання для тесту перетину',
@@ -171,9 +174,10 @@ describe('Bookings API (integration)', () => {
       });
       expect(first.status).toBe(201);
 
-      // Часткове перекриття: починається за 15 хв до кінця першого.
-      const overlappingStart = new Date(start.getTime() + 15 * 60000);
-      const overlappingEnd = new Date(end.getTime() + 15 * 60000);
+      // Часткове перекриття: починається за 30 хв до кінця першого
+      // (11:00–12:00 і 11:30–12:30 — 30 хв спільного інтервалу).
+      const overlappingStart = new Date(start.getTime() + 30 * 60000);
+      const overlappingEnd = new Date(end.getTime() + 30 * 60000);
 
       const second = await agent.post('/api/bookings').send({
         title: 'Бронювання, що перетинається',

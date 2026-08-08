@@ -15,7 +15,15 @@ services:
       POSTGRES_PASSWORD: booking
       POSTGRES_DB: booking
     ports:
-      - '5432:5432'
+      # Порт хоста навмисно 5433, а не стандартний 5432: у розробників, які
+      # вже мають локально встановлений PostgreSQL (Homebrew, Postgres.app
+      # тощо), порт 5432 часто вже зайнятий — і всі підключення з хоста
+      # (включно з `npx prisma db push`) тоді йдуть у ТОЙ локальний сервер
+      # замість Docker-контейнера, з незрозумілою помилкою на кшталт
+      # "User was denied access" (бо там немає ні потрібної бази, ні юзера).
+      # Всередині мережі docker-compose (сервіс app→db) порт лишається
+      # стандартним 5432 — це стосується лише проброшування на хост.
+      - '5433:5432'
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
